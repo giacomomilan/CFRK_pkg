@@ -1,9 +1,4 @@
-# ============================================================================
-# CFRK_utils.R - Utility Functions for Continuous Fixed Rank Kriging
-# ============================================================================
-
-# 1. LIBRARIES
-# ============================================================================
+# CFRK Utilities: Helper functions for CFRK spatial prediction
 library(magrittr)
 library(compositions)
 library(lubridate)
@@ -11,10 +6,10 @@ library(FRK)
 library(sf)
 library(ggplot2)
 
-
-# 2. GEOMETRIC UTILITY FUNCTIONS
-# ============================================================================
-
+# Function to create a bounding box from coordinates
+# Parameters:
+# - crs: Coordinate reference system
+# - xmin, xmax, ymin, ymax: Bounding box limits
 GetBBox <- function(crs, xmin=0, xmax=1, ymin=0, ymax=1) {
   st_as_sfc(st_bbox(
     c(xmin = xmin, xmax = xmax,
@@ -23,7 +18,9 @@ GetBBox <- function(crs, xmin=0, xmax=1, ymin=0, ymax=1) {
   )
 }
 
-
+# Function to create a bounding box from an sf geometry
+# Parameters:
+# - sf_geometry: sf object with geometry
 GetBBox_FromGeometry <- function(sf_geometry) {
   library(sf)
   limits = unlist(st_bbox(sf_geometry))
@@ -33,14 +30,15 @@ GetBBox_FromGeometry <- function(sf_geometry) {
   sfbbox
 }
 
-
-
+# Function to create a spatial grid from a bounding box
+# Parameters:
+# - this_bbox: Bounding box sf object
+# - xnum, ynum: Number of grid cells in x and y directions
 GetSpatialGrid_FromBBox <- function(this_bbox, xnum=100, ynum=100) {
   xmin = min(st_coordinates(this_bbox)[,1])
   xmax = max(st_coordinates(this_bbox)[,1])
   ymin = min(st_coordinates(this_bbox)[,2])
   ymax = max(st_coordinates(this_bbox)[,2])
-
 
   xstep = (xmax - xmin) / xnum
   ystep = (ymax - ymin) / ynum
@@ -52,19 +50,41 @@ GetSpatialGrid_FromBBox <- function(this_bbox, xnum=100, ynum=100) {
   y
 }
 
+# Algebraic methods
 
-# 3. DATA TRANSFORMATION FUNCTIONS
-# ============================================================================
+# Function to interpolate a vector on a regular grid
+# Parameters:
+# - nodes.coords: Coordinates of nodes
+# - nodes.v: Values at nodes
+# - eval.coords: Coordinates for evaluation
+# - extrap: Extrapolation flag
+InterpThisVector <- function(nodes.coords, nodes.v, eval.coords, extrap = FALSE){
+  library(fields)
+  library(akima)
+  # Linear interpolation on regular grid
+  interp_res <- interp(x = nodes.coords[,1], y = nodes.coords[,2], z = nodes.v,
+                      linear = TRUE, extrap = extrap)
+  # Interpolation at arbitrary points
+  valori_interp <- interp.surface(interp_res, eval.coords)
+  valori_interp
+}
 
-# 3.1 PCA (Principal Component Analysis) Transform
-# ============================================================================
+# PCA Transform
 
+# Function to transform variables to PCA scores
+# Parameters:
+# - dataframe: Data frame with variables
+# - colnames: Column names for PCA
 VarsToScores <- function(dataframe, colnames) {
   pca_output <- prcomp(as.data.frame(dataframe)[,colnames])
   list(scores=pca_output$x, pca_output=pca_output)
 }
 
-
+# Function to transform PCA scores back to variables
+# Parameters:
+# - dataframe_scores: Data frame with PCA scores
+# - pca_result: PCA result object
+# - colnames: Original column names
 ScoresToVars <- function(dataframe_scores, pca_result, colnames) {
   original_data <- as.data.frame(dataframe_scores %*% t(pca_result$rotation) +
                                    matrix(rep(pca_result$center,
@@ -72,10 +92,14 @@ ScoresToVars <- function(dataframe_scores, pca_result, colnames) {
   original_data
 }
 
+# ILR Transform
 
-# 3.2 ILR (Isometric Log-Ratio) Transform
-# ============================================================================
-
+# Function to transform compositional data to ILR coordinates
+# Parameters:
+# - df_cx: Compositional data
+# - cnames: Component names
+# - df_stations: Station data
+# - domain: Spatial domain
 TransformILR <- function(df_cx, cnames, df_stations, domain) {
   colnames <- sapply(1:(length(cnames) - 1), FUN=function(i){paste0("Y", as.character(i))})
   df_comp = ilr(df_cx[,cnames]) %>% set_colnames(colnames)
@@ -88,7 +112,7 @@ TransformILR <- function(df_cx, cnames, df_stations, domain) {
   st_crs(df_coord) <- st_crs(df_stations)
   df_coord <- st_transform(df_coord, st_crs(domain))
 
-  # aggiungo colonne di inversione (normalizzate per somma)
+  # Add inversion columns (normalized by sum)
   df_comp <- as.data.frame(setNames(ilrInv(ilr(df_cx[,cnames])), paste0(cnames, "_perc"))) %>% cbind(df_comp)
   #coordinates(df_comp) <- c('Longitude','Latitude') # mimic SpatialPointsDataFrame
   df_comp_out = SpatialPointsDataFrame(data = as.data.frame(df_comp),
@@ -97,30 +121,40 @@ TransformILR <- function(df_cx, cnames, df_stations, domain) {
   df_comp_out
 }
 
-
+# Function to revert ILR transformation
+# Parameters:
+# - dataframe: ILR data
+# - x, y: Coordinates
 RevertILR <- function(dataframe, x, y) {
  as.data.frame(matrix(as.numeric(ilrInv(dataframe)), ncol=dim(dataframe)[[2]]+1)) %>%
     set_colnames(paste("c",1:(dim(dataframe)[[2]]+1), sep='')) %>%
     cbind(x=x, y=y)
 }
 
+# Logit Transform
 
-# 3.3 Logit Transform
-# ============================================================================
-
+# Logit function
 logit <- function(p) {
   log(p / (1 - p))
 }
 
+# Inverse logit function
 inverse_logit <- function(x) {
   1 / (1 + exp(-x))
 }
 
+# ILR for two components
 ilr_two_comp <- function(x1, x2) {
   sqrt(1/2) * log(sqrt(x1*x2)/x2)
 }
 
-
+# Function to transform data using logit
+# Parameters:
+# - df_cx: Data frame
+# - cnames: Component names
+# - df_stations: Station data
+# - domain: Spatial domain
+# - data_p: Probability data
 TransformLogit <- function(df_cx, cnames, df_stations, domain, data_p) {
   #colnames <- sapply(1:(length(cnames) - 1), FUN=function(i){paste0("Y", as.character(i))})
   #df_comp = ilr(df_cx[,cnames]) %>% set_colnames(colnames)
@@ -134,7 +168,7 @@ TransformLogit <- function(df_cx, cnames, df_stations, domain, data_p) {
   st_crs(df_coord) <- st_crs(df_stations)
   df_coord <- st_transform(df_coord, st_crs(domain))
 
-  # aggiungo colonne di inversione (normalizzate per somma)
+  # Add inversion columns (normalized by sum)
   #df_comp <- data.frame(logit=log(p / (1 - p))) %>% cbind(df_comp)
   #coordinates(df_comp) <- c('Longitude','Latitude') # mimic SpatialPointsDataFrame
   df_comp_out = SpatialPointsDataFrame(data = as.data.frame(df_comp),
@@ -143,31 +177,22 @@ TransformLogit <- function(df_cx, cnames, df_stations, domain, data_p) {
   df_comp_out
 }
 
-
+# Function to revert logit transformation
+# Parameters:
+# - logit: Logit values
+# - x, y: Coordinates
 RevertLogit <- function(logit, x, y) {
  as.data.frame(cbind(1-inverse_logit(logit), inverse_logit(logit))) %>%
     set_colnames(c("c1", "c2")) %>%
     cbind(x=x, y=y)
 }
 
+# FRK objects
 
-# 3.4 Algebraic Methods (Interpolation)
-# ============================================================================
-
-InterpThisVector <- function(nodes.coords, nodes.v, eval.coords, extrap = FALSE){
-  library(fields)
-  library(akima)
-  # Interpolazione lineare su griglia regolare
-  interp_res <- interp(x = nodes.coords[,1], y = nodes.coords[,2], z = nodes.v,
-                      linear = TRUE, extrap = extrap)
-  # Interpolazione nei punti arbitrari
-  valori_interp <- interp.surface(interp_res, eval.coords)
-  valori_interp
-}
-
-# 4. FRK SETUP FUNCTIONS
-# ============================================================================
-
+# Function to get a spatial grid within a domain
+# Parameters:
+# - domain.geometry: Domain geometry
+# - grid.xnum, grid.ynum: Grid dimensions
 GetGrid <- function(domain.geometry, grid.xnum=80, grid.ynum = 80) {
   library(sp)
   sfbbox = GetBBox_FromGeometry(domain.geometry)
@@ -179,9 +204,13 @@ GetGrid <- function(domain.geometry, grid.xnum=80, grid.ynum = 80) {
   grid
 }
 
+# Function to create BAU grid
+# Parameters:
+# - dataframe: Data for BAU creation
+# - cellsize: Cell size for BAUs
 GetGridBAUs <- function(dataframe, cellsize) {
   set.seed(1)
-  # 1. set of BAUs
+  # 1. Set of BAUs
   GridBAUs1 <- auto_BAUs(manifold = plane(), # 2D plane
                           cellsize = c(cellsize, cellsize), # BAU cellsize
                           type = "grid", # grid (not hex)
@@ -189,27 +218,42 @@ GetGridBAUs <- function(dataframe, cellsize) {
                           convex = -0.05, # border buffer factor
                           nonconvex_hull = FALSE) # convex hull
 
-
   # 2. BAU-specific variation
-  # variation at BAU level for hetereoscedascity:
-  # for the ith BAU, we also need to attribute the element vi that describes
-  # the hetereoscedascity of the fine-scale variation for that BAU
-  # (can be tipically altitude)
+  # Variation at BAU level for heteroscedasticity:
+  # For the ith BAU, we also need to attribute the element vi that describes
+  # the heteroscedasticity of the fine-scale variation for that BAU
+  # (can be typically altitude)
   GridBAUs1$fs <- 1 # fine-scale variation at BAU level
   GridBAUs1
 }
 
+# Function to subset intersecting grid with polygons
+# Parameters:
+# - GridBAUs1: BAU grid
+# - polygons_sf_cover: Covering polygons
 Subset_Intersecating_Grid <- function(GridBAUs1, polygons_sf_cover){
-  # Supponendo che spdf sia un SpatialPixelsDataFrame
+  # Assuming spdf is a SpatialPixelsDataFrame
   pixels_sf <- st_as_sf(as(GridBAUs1, "SpatialPointsDataFrame"))
-  polygons_sf <- st_make_valid(polygons_sf_cover)  # se necessario
-  # Calcola intersezioni
+  polygons_sf <- st_make_valid(polygons_sf_cover)  # if necessary
+  # Calculate intersections
   hits <- st_intersects(pixels_sf, polygons_sf, sparse = TRUE)
-  # hits è una lista di vettori: per ogni pixel, gli indici dei poligoni che interseca
+  # hits is a list of vectors: for each pixel, the indices of polygons it intersects
   intersecting_pixels <- lengths(hits) > 0
   GridBAUs1[intersecting_pixels,]
 }
 
+# Function to get FRK output folder
+# Parameters:
+# - figures_folder: Base folder
+# - DestName.Pollutant: Pollutant name
+# - Global_Use_Cov_Population: Use population covariate
+# - Global_Use_Cov_Elevation: Use elevation covariate
+# - frk.args: FRK arguments
+# - flag_use_pca: PCA flag
+# - flag_obs_fs: Observation fs flag
+# - baus.cellsize: BAU cell size
+# - DestName.IndexDrop: Index drop
+# - foldername: Folder name (optional)
 GetFRKFolderOutput <- function(
   figures_folder, DestName.Pollutant,
   Global_Use_Cov_Population, Global_Use_Cov_Elevation,
@@ -225,11 +269,15 @@ GetFRKFolderOutput <- function(
   }
   folder_output = paste(figures_folder, foldname, sep='/')
   if(!dir.exists(folder_output)){dir.create(folder_output)}
-  # scrivere su file "output.txt"
+  # Write to file "output.txt"
   cat(conf, file = paste(folder_output, 'configuration.txt', sep = '/'))
   folder_output
 }
 
+# Function to get basis functions for FRK
+# Parameters:
+# - dataframe: Data for basis creation
+# - frk.args: FRK arguments
 GetBasis <- function(dataframe, frk.args) {
   if ("basis_type" %in% names(frk.args)) {
     type = frk.args[["basis_type"]]
@@ -250,7 +298,7 @@ GetBasis <- function(dataframe, frk.args) {
   cat(">> AUTO BASIS: using Nres =", nres,'\n')
   cat(">> AUTO BASIS: using Regular =", regular,'\n')
 
-  # 3. basis functions for covariance modeling
+  # 3. Basis functions for covariance modeling
   G <- auto_basis(manifold = plane(), # 2D plane
                   data = dataframe, # meuse data
                   nres = nres, # number of resolutions
@@ -259,39 +307,55 @@ GetBasis <- function(dataframe, frk.args) {
   G
 }
 
-
-# 5. COVARIATE INTERPOLATION FUNCTIONS
-# ============================================================================
-
+# Function to interpolate raster values on BAUs
+# Parameters:
+# - GridBAUs: BAU grid
+# - raster: Raster object
 Interp_OnBaus_Raster <- function(GridBAUs, raster) {
   library(raster)
   grid_r <- st_transform(st_as_sf(as.data.frame(coordinates(GridBAUs)),
                                   coords = c('x', 'y'), crs = st_crs(GridBAUs)),
                          crs = st_crs(raster))
-  # conversione covariata per metodo
+  # Covariate conversion for method
   cov = raster::extract(raster, grid_r)
   cov
 }
 
+# Function to interpolate population density on BAUs
+# Parameters:
+# - data_air: Air data
+# - GridBAUs1: BAU grid
+# - data_popolazione_smoothed_nodes: Population data
 Interp_OnBaus_DensityPopOnNodes <- function(data_air, GridBAUs1, data_popolazione_smoothed_nodes) {
   cov.P1 <- InterpThisVector(st_coordinates(data_popolazione_smoothed_nodes),
        data_popolazione_smoothed_nodes$density, as.data.frame(GridBAUs1)[,c('x', 'y')])
   cov.P1
 }
 
+# Function to interpolate elevation on BAUs
+# Parameters:
+# - data_air: Air data
+# - GridBAUs1: BAU grid
+# - raster.elevazione: Elevation raster
 Interp_OnBaus_Elevation <- function(data_air, GridBAUs1, raster.elevazione) {
   grid_r <- st_transform(st_as_sf(as.data.frame(coordinates(GridBAUs1)),
     coords = c('x', 'y'), crs = st_crs(data_air$grid)),
                crs = st_crs(raster.elevazione))
-  # conversione covariata per metodo
+  # Covariate conversion for method
   cov.Elev = raster::extract(raster.elevazione, grid_r)
   cov.Elev
 }
 
+# Core FRK functions
 
-# 6. CORE FRK FITTING & PREDICTION FUNCTIONS
-# ============================================================================
-
+# Function to fit and predict with formula
+# Parameters:
+# - formula: Model formula
+# - dataframe: Data
+# - GridBAUs: BAU grid
+# - BasisG: Basis functions
+# - pars.fit.no_iterations: Number of EM iterations
+# - tol: Tolerance
 FitAndPredict_withFormula <- function(formula, dataframe, GridBAUs, BasisG, pars.fit.no_iterations, tol=0.01) {
     library(FRK) # for carrying out FRK
     boot_data <- as.data.frame(dataframe)
@@ -317,6 +381,14 @@ FitAndPredict_withFormula <- function(formula, dataframe, GridBAUs, BasisG, pars
     list(BAUs_prediction_df=BAUs_prediction_df, S=S)
 }
 
+# Function to fit and predict with formula and K type
+# Parameters:
+# - formula: Model formula
+# - dataframe: Data
+# - GridBAUs: BAU grid
+# - BasisG: Basis functions
+# - pars.fit.no_iterations: Number of EM iterations
+# - pars.fit.Ktype: K type
 FitAndPredict_withFormula_K <- function(formula, dataframe, GridBAUs, BasisG, pars.fit.no_iterations, pars.fit.Ktype) {
     cat("K_type ", pars.fit.Ktype, "\n")
     library(FRK) # for carrying out FRK
@@ -339,10 +411,13 @@ FitAndPredict_withFormula_K <- function(formula, dataframe, GridBAUs, BasisG, pa
     list(BAUs_prediction_df=BAUs_prediction_df, S=S)
 }
 
+# FRK steps functions
 
-# 7. FRK WORKFLOW FUNCTIONS
-# ============================================================================
-
+# Function to prepare data for kriging
+# Parameters:
+# - data.comp: Compositional data
+# - colnames.euclid: Euclidean column names
+# - flag_use_pca: PCA flag
 PrepareData_For_Kriging <- function(data.comp, colnames.euclid, flag_use_pca) {
   if (flag_use_pca)
   {
@@ -368,7 +443,12 @@ PrepareData_For_Kriging <- function(data.comp, colnames.euclid, flag_use_pca) {
   list(data.krig = data.krig, pca_output = pca_output)
 }
 
-
+# Function to get average values over municipalities
+# Parameters:
+# - dataframe.prediction: Prediction data
+# - comuni: Municipal boundaries
+# - field: Field to average
+# - data_air_dataset: Air dataset
 GetAvg <- function(dataframe.prediction, comuni, field, data_air_dataset) {
   library(sp)
   library(sf)
@@ -380,12 +460,26 @@ GetAvg <- function(dataframe.prediction, comuni, field, data_air_dataset) {
   exact_extract(raster_obj, comuni, fun="mean")
 }
 
-
+# Function to perform FRK prediction
+# Parameters:
+# - domain: Spatial domain
+# - GridBAUs: BAU grid
+# - frk.args: FRK arguments
+# - data.comp: Compositional data
+# - data.krig: Kriging data
+# - colnames.euclid: Euclidean column names
+# - comuni: Municipal boundaries
+# - Global_Use_Cov_Population: Use population covariate
+# - Global_Use_Cov_Elevation: Use elevation covariate
+# - figures_folder: Figures folder
+# - no_iterations: Number of iterations
+# - fitted.locations: Fitted locations
+# - tol: Tolerance
 DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
                             colnames.euclid, comuni,
                             Global_Use_Cov_Population, Global_Use_Cov_Elevation,
                             figures_folder,
-                            no_iterations, fitted.locations = NULL, tol=0.01) {
+                            no_iterations, fitted.locations = NULL, tol=0.01, flag_no_plot = TRUE) {
   colnames_pred = paste0(colnames.euclid, '.pred')
 
   if (is.null(GridBAUs)) {
@@ -393,7 +487,7 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
     GridBAUs1 <- GetGridBAUs(prediction.grid, cellsize=baus.cellsize)
 
     if (is.null(cov.P1)) {
-      # aggiungo popolazione a GridBaus
+      # Add population to GridBAUs
       layer_popolazione.Spat = as(st_transform(layer_popolazione, st_crs(GridBAUs1)), "Spatial")
       cov.P1 = over(SpatialPoints(GridBAUs1, proj4string = CRS("+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs")), layer_popolazione.Spat)$Popolazione.P1
     }
@@ -401,7 +495,7 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
     grid_r <- st_transform(st_as_sf(as.data.frame(coordinates(GridBAUs1)),
       coords = c('x', 'y'), crs = st_crs(prediction.grid)),
                 crs = st_crs(raster.elevazione))
-    # conversione covariata per metodo
+    # Covariate conversion for method
     cov.Elev = raster::extract(raster.elevazione,
       grid_r)
 
@@ -416,7 +510,7 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
     GridBAUs$Popolazione.P1 = cov.P1[!discard_tiles]
   }
 
-  if (!FLAG_NO_PLOT) {
+  if (!flag_no_plot) {
     coogrid = as.data.frame(coordinates(GridBAUs1))[ ,c('x', 'y')]
     ggplot() + geom_sf(data=domain, aes()) + geom_point(data=coogrid, aes(x, y))
     ggsave(paste(folder_output, "baus.png", sep="/"))
@@ -426,9 +520,8 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
   G <- GetBasis(domain.prediction.grid, frk.args)
   cat("done basis G\n")
 
-  # ---------------------------------------------------------------------------
-  # ONLY SHOW
-  if (!FLAG_NO_PLOT) {
+  # Show basis functions
+  if (!flag_no_plot) {
     g <- ggplot() + geom_sf(data=domain, aes())
     show_basis(G, g = g) + # coord_fixed() + # fix aspect ratio
       xlab("Easting (m)") + # x-label
@@ -436,16 +529,15 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
     ggsave(paste(folder_output, "basis_functions.png", sep="/"))
   }
 
-  # ONLY OUTPUT
+  # Output info
   cat("INFO: BASE\n")
-  cat("Numero Funzioni Base = ", attributes(G)$n, "\n\n")
-  cat("Numero osservazioni = ", dim(data.comp)[1], "\n\n")
+  cat("Number of Basis Functions = ", attributes(G)$n, "\n\n")
+  cat("Number of observations = ", dim(data.comp)[1], "\n\n")
   cat('\n')
-
 
   # ============================================================================
   # 1   FIT AND PREDICTION
-  # 1.1 Prediction su BAUS
+  # 1.1 Prediction on BAUs
 
   n <- nrow(coordinates(GridBAUs))
   prediction <- SpatialPixelsDataFrame(
@@ -493,14 +585,14 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
 
   comuniresultall.meaneucl = comuni
 
+  # Aggregate predictions to municipal level
   for (i in (1:length(colnames_pred)))
   {
     datafill = GetAvg(prediction, comuni, colnames_pred[i], data.comp)
     comuniresultall.meaneucl[colnames_pred[i]] = datafill
   }
 
-
-  # 1.3 Prediction on observed locations (fitted)
+  # Prediction on observed locations (fitted)
   Extract <- function(prediction, fitted.locations, field) {
     library(raster)
     raster::extract(raster(SpatialPixelsDataFrame(
@@ -525,9 +617,8 @@ DoFRKPrediction <- function(domain, GridBAUs, frk.args, data.comp, data.krig,
     Slist=Slist)
 }
 
+## Plot
 
-# 8. PLOTTING & VISUALIZATION FUNCTIONS
-# ============================================================================
 PlotSymbols = function(dataset, colname, Do.Log = T, Use.Pop = T, title="", labels=c(), layer_popolazione=NULL) {
   plotsym_vals_shape = c(1, 1, 2, 5, 5)
   plotsym_vals_size = c(3, 1, 1, 1, 3)
@@ -659,9 +750,6 @@ CFRKPlotPrediction <- function(data.comp, domain, prediction.conc, comp.fitted.d
 }
 
 
-# 9. DATA EXPORT FUNCTIONS
-# ============================================================================
-
 CFRKSave <- function(comuniresult, exporting_colnames, folder_output,
     Global_Use_Cov_Population, Global_Use_Cov_Elevation, Flag_Export_only_PRO_COM = TRUE, suffix="") {
 
@@ -679,3 +767,4 @@ CFRKSave <- function(comuniresult, exporting_colnames, folder_output,
     st_write(comuniresult, paste0(filepath, '.gpkg'), append = FALSE)
   }
 }
+
